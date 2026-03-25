@@ -1,29 +1,17 @@
+import agent.Agent
+import agent.MrAgent
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.net.URI
 import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.charset.Charset
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.serialization.json.Json
-import models.ChatCompletionRequest
-import models.ChatCompletionResponse
-import models.ChatMessage
 import models.ChatRole
 
 private const val CONFIG_FILE = "config/app.properties"
-private const val MODEL = "DeepSeek V3.2"
-private const val MAX_TOKENS = 400
-private const val TEMPERATURE = 0.7
-private const val API_URL_TEMPLATE =
-    "https://agent.timeweb.cloud/api/v1/cloud-ai/agents/%s/v1/chat/completions"
 
-private val json = Json { ignoreUnknownKeys = true }
 private val consoleReader = BufferedReader(
     InputStreamReader(System.`in`, detectConsoleCharset())
 )
@@ -31,17 +19,16 @@ private val systemConsole = System.console()
 
 fun main() {
     val config = loadConfig()
-    val agentId = config.getRequired("AGENT_ID")
-    val userToken = config.getRequired("USER_TOKEN")
-    val httpClient = HttpClient.newHttpClient()
-    val conversation = mutableListOf(
-        ChatMessage(
-            role = ChatRole.SYSTEM.apiValue,
-            content = buildSystemPrompt()
-        )
+    val agent: Agent<String> = MrAgent(
+        httpClient = HttpClient.newHttpClient(),
+        agentId = config.getRequired("AGENT_ID"),
+        userToken = config.getRequired("USER_TOKEN")
     )
 
     println("Чат готов. Введите 'exit' или 'quit', чтобы завершить работу.")
+    println("Агент: ${agent.info.name}")
+    println("Описание: ${agent.info.description}")
+    println("Модель: ${agent.info.model}")
 
     while (true) {
         print("${ChatRole.USER.displayName}: ")
@@ -56,65 +43,21 @@ fun main() {
             break
         }
 
-        conversation += ChatMessage(role = ChatRole.USER.apiValue, content = prompt)
-
         try {
             val loading = LoadingIndicator()
             loading.start()
 
             val content = try {
-                requestCompletion(
-                    httpClient = httpClient,
-                    agentId = agentId,
-                    userToken = userToken,
-                    conversation = conversation
-                )
+                agent.ask(prompt)
             } finally {
                 loading.stop()
             }
 
-            conversation += ChatMessage(role = ChatRole.ASSISTANT.apiValue, content = content)
             println("${ChatRole.ASSISTANT.displayName}: $content")
         } catch (error: Exception) {
             println("Не удалось выполнить запрос: ${error.message}")
         }
     }
-}
-
-private fun buildSystemPrompt(): String =
-    "Ты полезный ассистент. Отвечай кратко, если пользователь не просит подробнее."
-
-private fun requestCompletion(
-    httpClient: HttpClient,
-    agentId: String,
-    userToken: String,
-    conversation: List<ChatMessage>
-): String {
-    val requestBody = json.encodeToString(
-        ChatCompletionRequest(
-            model = MODEL,
-            messages = conversation,
-            temperature = TEMPERATURE,
-            maxTokens = MAX_TOKENS
-        )
-    )
-
-    val request = HttpRequest.newBuilder()
-        .uri(URI.create(API_URL_TEMPLATE.format(agentId)))
-        .header("Content-Type", "application/json; charset=UTF-8")
-        .header("Authorization", "Bearer $userToken")
-        .POST(HttpRequest.BodyPublishers.ofString(requestBody, StandardCharsets.UTF_8))
-        .build()
-
-    val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-
-    if (response.statusCode() !in 200..299) {
-        error("API вернул статус ${response.statusCode()}: ${response.body()}")
-    }
-
-    val completion = json.decodeFromString<ChatCompletionResponse>(response.body())
-    return completion.choices.firstOrNull()?.message?.content
-        ?: error("Ответ API не содержит choices[0].message.content")
 }
 
 private fun detectConsoleCharset(): Charset {
